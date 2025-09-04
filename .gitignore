@@ -1,0 +1,24 @@
+
+# Visual Studio
+.vs/
+*.VC.db
+*.VC.VC.opendb
+*.suo
+*.user
+*.[Pp]roject.user
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+Win32/
+build/
+[Bb]in/
+[Oo]bj/
+
+# Python Caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
