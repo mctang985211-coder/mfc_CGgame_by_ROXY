@@ -29,7 +29,7 @@ public:
     // 重写
 public:
     virtual void OnDraw(CDC* pDC);
-    virtual BOOL PreCreateWindow(CREATESTRUCT& cs);
+    virtual BOOL PreCreateWindow(CREATESTRUCT& cs); 
 protected:
     virtual BOOL OnPreparePrinting(CPrintInfo* pInfo);
     // *** 已修正: 将 CInfo 改为 CPrintInfo ***
@@ -61,7 +61,8 @@ private:
         CCGgameView* pView;
         CString prompt;
     };
-
+    HBITMAP CreateBitmapFromCImage(ATL::CImage& image);
+    HBITMAP CreateMaskFromBitmap(HBITMAP hbmImage);
     // 游戏状态
     int m_score;
     int m_round;

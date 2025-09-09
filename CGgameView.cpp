@@ -31,6 +31,7 @@ BEGIN_MESSAGE_MAP(CCGgameView, CView)
     ON_WM_CREATE()
     ON_MESSAGE(WM_IMAGE_LOADED, &CCGgameView::OnImageLoaded)
 END_MESSAGE_MAP()
+CImageList m_dragImageList;
 
 CCGgameView::CCGgameView() noexcept
     : m_score(0), m_round(1), m_turn(1), m_upgradePoints(0),
@@ -94,21 +95,19 @@ int CCGgameView::OnCreate(LPCREATESTRUCT lpCreateStruct)
 
 void CCGgameView::OnDraw(CDC* pDC)
 {
-    CCGgameDoc* pDoc = GetDocument();
-    ASSERT_VALID(pDoc);
-    if (!pDoc)
-        return;
-
+    // 获取窗口的客户区
     CRect clientRect;
     GetClientRect(&clientRect);
 
+    // 创建内存DC和内存位图
     CDC memDC;
     memDC.CreateCompatibleDC(pDC);
     CBitmap memBitmap;
     memBitmap.CreateCompatibleBitmap(pDC, clientRect.Width(), clientRect.Height());
     CBitmap* pOldBitmap = memDC.SelectObject(&memBitmap);
 
-    memDC.FillSolidRect(&clientRect, RGB(240, 248, 255));
+    // 在内存中绘制所有内容
+    memDC.FillSolidRect(&clientRect, RGB(240, 248, 255)); // 这一步很重要，它将清除旧的图像区域
     m_appleTree.Draw(&memDC, CRect(20, 20, 220, 220));
 
     if (m_isGameActive)
@@ -117,7 +116,16 @@ void CCGgameView::OnDraw(CDC* pDC)
         {
             bin.Draw(&memDC);
         }
+        
+        // **核心修改：设置 GDI 缩放模式**
+        // 获取当前的缩放模式，以便在绘制后恢复
+        int oldStretchMode = memDC.SetStretchBltMode(HALFTONE);
+
+        // 在内存DC上绘制 m_currentItem
         m_currentItem.Draw(&memDC);
+
+        // 恢复原始的缩放模式
+        memDC.SetStretchBltMode(oldStretchMode);
     }
 
     memDC.SelectObject(&m_uiFont);
@@ -131,7 +139,10 @@ void CCGgameView::OnDraw(CDC* pDC)
         memDC.TextOut(clientRect.CenterPoint().x - 100, clientRect.CenterPoint().y - 50, _T("点击 游戏->开始新游戏"));
     }
 
+    // 一次性将内存中的内容绘制到屏幕上
     pDC->BitBlt(0, 0, clientRect.Width(), clientRect.Height(), &memDC, 0, 0, SRCCOPY);
+    
+    // 清理
     memDC.SelectObject(pOldBitmap);
 }
 
@@ -268,14 +279,16 @@ LRESULT CCGgameView::OnImageLoaded(WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
-
 void CCGgameView::OnLButtonDown(UINT nFlags, CPoint point)
 {
+
     if (m_isGameActive && m_currentItem.GetRect().PtInRect(point))
     {
         m_isDragging = true;
+        SetCapture(); // 捕获鼠标，确保即使鼠标移出窗口也能继续拖动
+
+        // 核心：计算鼠标点击位置到图片左上角的偏移量
         m_dragOffset = point - m_currentItem.GetPosition();
-        SetCapture();
     }
     CView::OnLButtonDown(nFlags, point);
 }
@@ -284,12 +297,43 @@ void CCGgameView::OnMouseMove(UINT nFlags, CPoint point)
 {
     if (m_isDragging)
     {
+        // 记录旧的矩形区域，用于局部重绘
+        CRect oldRect = m_currentItem.GetRect();
+
+        // 核心：使用 m_dragOffset 来更新 m_currentItem 的位置
         m_currentItem.SetPosition(point - m_dragOffset);
+
+        // 记录新的矩形区域
+        CRect newRect = m_currentItem.GetRect();
+
+        // 确保新旧区域都被重绘
+        CRect redrawRect;
+        redrawRect.UnionRect(&oldRect, newRect);
+
         for (auto& bin : m_bins)
         {
-            bin.SetLidOpen(bin.GetRect().PtInRect(point));
+            CRect currentItemRect = m_currentItem.GetRect();
+            CRect binRect = bin.GetRect();
+
+            // 判断被拖动的垃圾图片矩形是否与垃圾桶矩形相交
+            BOOL bIntersects = FALSE;
+            CRect intersectRect;
+            if (intersectRect.IntersectRect(&currentItemRect, &binRect))
+            {
+                bIntersects = TRUE;
+            }
+
+            // 根据是否相交来设置盖子状态，并检查状态是否改变
+            if (bin.IsLidOpen() != bIntersects)
+            {
+                bin.SetLidOpen(bIntersects);
+                // 如果状态改变，需要重新绘制垃圾桶区域
+                InvalidateRect(&binRect, FALSE);
+            }
         }
-        Invalidate();
+
+        // 强制局部重绘，只重绘垃圾图片和它移动过的区域
+        InvalidateRect(&redrawRect, FALSE);
     }
     CView::OnMouseMove(nFlags, point);
 }
@@ -299,7 +343,7 @@ void CCGgameView::OnLButtonUp(UINT nFlags, CPoint point)
     if (m_isDragging)
     {
         m_isDragging = false;
-        ReleaseCapture();
+        ReleaseCapture(); // 释放鼠标捕获
 
         CheckDrop(point);
 
@@ -442,6 +486,67 @@ void CCGgameView::AttachDebugConsole()
 BOOL CCGgameView::OnPreparePrinting(CPrintInfo* pInfo) { return DoPreparePrinting(pInfo); }
 void CCGgameView::OnBeginPrinting(CDC* /*pDC*/, CPrintInfo* /*pInfo*/) {}
 void CCGgameView::OnEndPrinting(CDC* /*pDC*/, CPrintInfo* /*pInfo*/) {}
+
+HBITMAP CCGgameView::CreateMaskFromBitmap(HBITMAP hbmImage)
+{
+    BITMAP bm;
+    ::GetObject(hbmImage, sizeof(bm), &bm);
+    int nWidth = bm.bmWidth;
+    int nHeight = bm.bmHeight;
+
+    HBITMAP hbmMask = ::CreateBitmap(nWidth, nHeight, 1, 1, NULL);
+    if (hbmMask == NULL) {
+        return NULL;
+    }
+
+    CWindowDC dc(NULL);
+    CDC dcMask;
+    dcMask.CreateCompatibleDC(&dc);
+    CBitmap* pOldMaskBitmap = dcMask.SelectObject(CBitmap::FromHandle(hbmMask));
+
+    CDC dcImage;
+    dcImage.CreateCompatibleDC(&dc);
+    CBitmap* pOldImageBitmap = dcImage.SelectObject(CBitmap::FromHandle(hbmImage));
+
+    COLORREF crTransparent = RGB(255, 255, 255);
+    dcImage.SetBkColor(crTransparent);
+    dcMask.BitBlt(0, 0, nWidth, nHeight, &dcImage, 0, 0, SRCCOPY);
+
+    dcMask.SelectObject(pOldMaskBitmap);
+    dcImage.SelectObject(pOldImageBitmap);
+
+    return hbmMask;
+}
+
+HBITMAP CCGgameView::CreateBitmapFromCImage(CImage& image)
+{
+    if (image.IsNull())
+    {
+        return NULL;
+    }
+
+    int nWidth = image.GetWidth();
+    int nHeight = image.GetHeight();
+
+    // 使用 GDI API 创建一个与屏幕兼容的位图
+    CWindowDC dcScreen(NULL);
+    HBITMAP hbmCopy = ::CreateCompatibleBitmap(dcScreen.GetSafeHdc(), nWidth, nHeight);
+    if (hbmCopy == NULL)
+    {
+        return NULL;
+    }
+
+    // 将 CImage 的内容绘制到位图副本上
+    CDC dcMem;
+    dcMem.CreateCompatibleDC(&dcScreen);
+    HBITMAP hbmOld = (HBITMAP)::SelectObject(dcMem.GetSafeHdc(), hbmCopy);
+
+    image.Draw(dcMem.GetSafeHdc(), 0, 0, nWidth, nHeight, 0, 0, nWidth, nHeight);
+
+    ::SelectObject(dcMem.GetSafeHdc(), hbmOld);
+
+    return hbmCopy;
+}
 
 #ifdef _DEBUG
 void CCGgameView::AssertValid() const { CView::AssertValid(); }
